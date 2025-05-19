@@ -15,7 +15,7 @@ INTERVAL = 30  # 0 = run once, >0 = run every INTERVAL seconds
 if platform.system() == "Windows":
     FILE_PATH = r"D:\Ken\HamRadio\wsjtx_log.adi"
 else:
-    FILE_PATH = os.path.expanduser("~/.local/share/WSJTX/wsjtx_log.adi")
+    FILE_PATH = os.path.expanduser("~/.local/share/WSJT-X/wsjtx_log.adi")
 
 # --- HELPER FUNCTIONS ---
 def parse_adi(filepath):
