@@ -1,117 +1,152 @@
 #!/usr/bin/env python3
 
+#!/usr/bin/env python3
+
 import os
-import platform
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 
-# --- CONFIGURATION ---
-ALL = False # Just one day
-DATE = ""  # Format: "YYYYMMDD"; leave blank for today's date
-INTERVAL = 30  # 0 = run once, >0 = run every INTERVAL seconds
+# CONFIGURATION
+ALL = False  # If True, processes entire file once
+DATE = ""    # If ALL is False, uses this date; if empty, uses today
+INTERVAL = 30  # Set to 0 for one-shot mode, or seconds for continuous
+FILENAME = "wsjtx_log.adi"
 
-# --- FILE PATH SETUP ---
-if platform.system() == "Windows":
-    FILE_PATH = r"D:\Ken\HamRadio\wsjtx_log.adi"
+# Auto path detection
+if os.name == 'nt':
+    FILE_PATH = r"D:\Ken\HamRadio"
 else:
-    FILE_PATH = os.path.expanduser("~/.local/share/WSJT-X/wsjtx_log.adi")
+    FILE_PATH = os.path.expanduser("~/.local/share/WSJT-X")
 
-# --- HELPER FUNCTIONS ---
+# Modes and Submodes to include
+VALID_MODES = {"FT8", "FT4"}
+
 def parse_adi(filepath):
-    with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-        lines = f.read().split("<eor>")
+    with open(filepath, encoding="utf-8", errors="ignore") as f:
+        content = f.read()
+    entries = content.split("<eor>")
     qsos = []
-    for entry in lines:
+    for entry in entries:
+        if "<call:" not in entry:
+            continue
         qso = {}
-        for part in entry.strip().split("<"):
-            if ":" in part:
-                keylen, val = part.split(">", 1)
-                key = keylen.split(":")[0].lower()
-                qso[key] = val.strip()
-        if qso:
-            qsos.append(qso)
+        fields = entry.strip().split("<")[1:]
+        for field in fields:
+            if ":" not in field:
+                continue
+            try:
+                tag_len, val = field.split(">", 1)
+                tag = tag_len.split(":")[0].lower()
+                qso[tag] = val.strip()
+            except Exception:
+                continue
+        qsos.append(qso)
     return qsos
 
-def is_digimode(qso):
-    mode = qso.get("mode", "").upper()
-    submode = qso.get("submode", "").upper()
-    return (mode == "FT8") or (submode == "FT4")
+def format_table(counts, highlight=None):
+    bands = sorted({band for band_counts in counts.values() for band in band_counts})
+    highlight_band = highlight[1] if highlight else None
 
-def get_qso_date(qso):
-    return qso.get("qso_date", "")
+    # Prepare headers and rows
+    header = ["Mode"]
+    rows = []
 
-def get_qso_hour(qso):
-    return qso.get("time_on", "")[:2]
+    for band in bands:
+        header.append(f"{band:>5}")
 
-def print_summary(qsos, label=""):
-    bands = sorted(set(qso.get("band", "").upper() for qso in qsos if qso.get("band")))
-    bands = sorted(bands, key=lambda b: int(b[:-1]) if b[:-1].isdigit() else 0)
-    modes = ["FT8", "FT4"]
-    summary = defaultdict(lambda: defaultdict(int))
-    hour_counts = defaultdict(int)
+    for mode in sorted(counts):
+        row = [mode]
+        for band in bands:
+            val = counts[mode].get(band, 0)
+            if highlight and (mode, band) == highlight:
+                row.append(f"* {val:>3}")
+            else:
+                row.append(f"{val:>5}")
+        rows.append(row)
 
-    now = datetime.utcnow()
-    one_hour_ago = now - timedelta(hours=1)
+    # Compute column widths based on actual string widths
+    col_widths = [max(len(cell) for cell in col) for col in zip(*([header] + rows))]
+    table_lines = []
+
+    def fmt_line(row):
+        return "| " + " | ".join(f"{cell:>{w}}" for cell, w in zip(row, col_widths)) + " |"
+
+    table_lines.append("=" * (sum(col_widths) + 3 * len(col_widths) + 1))
+    table_lines.append(fmt_line(header))
+    table_lines.append("+" + "+".join("-" * (w + 2) for w in col_widths) + "+")
+    for row in rows:
+        table_lines.append(fmt_line(row))
+    table_lines.append("=" * (sum(col_widths) + 3 * len(col_widths) + 1))
+    return "\n".join(table_lines)
+
+def summarize_qsos(qsos, target_date=None):
+    counts = defaultdict(lambda: defaultdict(int))
+    hourly_qsos = defaultdict(int)
+    most_recent = None
+    latest_time = None
 
     for qso in qsos:
+        date = qso.get("qso_date")
+        time_on = qso.get("time_on")
+        band = qso.get("band")
         mode = qso.get("mode", "").upper()
         submode = qso.get("submode", "").upper()
-        band = qso.get("band", "").upper()
-        qso_datetime_str = qso.get("qso_date", "") + qso.get("time_on", "")
-        try:
-            qso_time = datetime.strptime(qso_datetime_str, "%Y%m%d%H%M%S")
-        except:
+
+        if target_date and date != target_date:
             continue
-        if mode == "FT8":
-            summary["FT8"][band] += 1
-        elif submode == "FT4":
-            summary["FT4"][band] += 1
 
-        if one_hour_ago <= qso_time <= now:
-            hour = qso_time.strftime("%H")
-            hour_counts[hour] += 1
+        if submode in VALID_MODES:
+            mode = submode
+        elif mode not in VALID_MODES:
+            continue
 
-    # --- Print Table ---
-    print("=" * 60)
-    print(f"QSO Summary for {label}")
-    print("=" * 60)
-    if not summary:
-        print("No FT8/FT4 QSOs found.")
+        counts[mode][band] += 1
+
+        if time_on and len(time_on) >= 2:
+            hour = time_on[:2]
+            hourly_qsos[hour] += 1
+
+        if INTERVAL > 0 and date:
+            dt_str = f"{date} {time_on}"
+            try:
+                dt = datetime.strptime(dt_str, "%Y%m%d %H%M%S")
+                if not latest_time or dt > latest_time:
+                    latest_time = dt
+                    most_recent = (mode, band)
+            except:
+                pass
+
+    return counts, hourly_qsos, most_recent
+
+def main():
+    filepath = os.path.join(FILE_PATH, FILENAME)
+    if not os.path.isfile(filepath):
+        print(f"File not found: {filepath}")
         return
 
-    header = f"| {'Mode':<4} |" + "".join([f" {b:>4} |" for b in bands])
-    print(header)
-    print("+" + "-" * (len(header) - 2) + "+")
-    for mode in modes:
-        row = f"| {mode:<4} |" + "".join([f" {summary[mode][b]:>4} |" for b in bands])
-        print(row)
-    print("=" * 60)
-
-    print("QSOs in the last 60 minutes (UTC):", sum(hour_counts.values()))
-    print("=" * 60)
-
-# --- MAIN LOOP ---
-def main():
-    while True:
-        qsos = parse_adi(FILE_PATH)
-        filtered_qsos = []
-
+    def determine_date():
         if ALL:
-            filtered_qsos = [q for q in qsos if is_digimode(q)]
-            label = "ENTIRE LOG"
-        else:
-            if DATE:
-                date_filter = DATE
-            else:
-                date_filter = datetime.utcnow().strftime("%Y%m%d")
-            filtered_qsos = [q for q in qsos if is_digimode(q) and get_qso_date(q) == date_filter]
-            label = date_filter
+            return None
+        return DATE if DATE else datetime.utcnow().strftime("%Y%m%d")
 
-        os.system("cls" if platform.system() == "Windows" else "clear")
-        print_summary(filtered_qsos, label)
+    while True:
+        qsos = parse_adi(filepath)
+        target_date = determine_date()
+        counts, hourly_qsos, highlight = summarize_qsos(qsos, target_date)
 
-        if INTERVAL == 0:
+        label = "ENTIRE LOG" if ALL else f"{datetime.strptime(target_date, '%Y%m%d').date()}"
+        print(f"\nQSO Summary for {label}")
+        print(format_table(counts, highlight=highlight))
+
+        if not ALL:
+            current_hour = datetime.utcnow().strftime("%H")
+            count_last_hour = hourly_qsos.get(current_hour, 0)
+            print("Hourly QSO Count (UTC):")
+            print(f"QSOs in the last 60 minutes: {count_last_hour}")
+            print("=" * 60)
+
+        if INTERVAL <= 0:
             break
         time.sleep(INTERVAL)
 
