@@ -2,22 +2,23 @@
 
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 # CONFIGURATION
-ALL = False          # If True, processes entire file once
-DATE = ""            # If populated, filters by this date (YYYYMMDD) in one-shot mode
-INTERVAL = 30        # Interval (in seconds) for continuous mode; 0 = one-shot
-HOURLY_WINDOW = 60   # QSO count window in minutes for recent activity display
+ALL = True       # If True, processes entire file once
+DATE = ""        # If ALL is False and this is set, uses this date only
+INTERVAL = 30    # Seconds for continuous mode; set to 0 for one-shot
+HOUR_WINDOW = 60  # For recent QSO summary (e.g., 60 minutes)
 FILENAME = "wsjtx_log.adi"
 
 # Auto path detection
 if os.name == 'nt':
     FILE_PATH = r"D:\Ken\HamRadio"
 else:
-    FILE_PATH = os.path.expanduser("~/.local/share/WSJTX")
+    FILE_PATH = os.path.expanduser("~/.local/share/WSJT-X")
 
+# Modes and Submodes to include
 VALID_MODES = {"FT8", "FT4"}
 
 def parse_adi(filepath):
@@ -44,6 +45,8 @@ def parse_adi(filepath):
 
 def format_table(counts, highlight=None):
     bands = sorted({band for band_counts in counts.values() for band in band_counts})
+    highlight_band = highlight[1] if highlight else None
+
     header = ["Mode"]
     rows = []
 
@@ -60,7 +63,6 @@ def format_table(counts, highlight=None):
                 row.append(f"{val:>5}")
         rows.append(row)
 
-    # Column widths
     col_widths = [max(len(cell) for cell in col) for col in zip(*([header] + rows))]
     table_lines = []
 
@@ -75,12 +77,14 @@ def format_table(counts, highlight=None):
     table_lines.append("=" * (sum(col_widths) + 3 * len(col_widths) + 1))
     return "\n".join(table_lines)
 
-def summarize_qsos(qsos, time_threshold=None, target_date=None, highlight_enabled=True):
+def summarize_qsos(qsos, target_date=None, window_hours=None, include_highlight=True):
     counts = defaultdict(lambda: defaultdict(int))
     hourly_qsos = defaultdict(int)
     most_recent = None
     latest_time = None
-    recent_cutoff = datetime.utcnow() - timedelta(minutes=HOURLY_WINDOW)
+
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=window_hours) if window_hours else None
 
     for qso in qsos:
         date = qso.get("qso_date")
@@ -89,19 +93,18 @@ def summarize_qsos(qsos, time_threshold=None, target_date=None, highlight_enable
         mode = qso.get("mode", "").upper()
         submode = qso.get("submode", "").upper()
 
-        if not date or not time_on or len(time_on) < 6:
-            continue
-
-        dt_str = f"{date} {time_on}"
         try:
-            dt = datetime.strptime(dt_str, "%Y%m%d %H%M%S")
-        except ValueError:
+            dt = datetime.strptime(f"{date} {time_on}", "%Y%m%d %H%M%S").replace(tzinfo=timezone.utc)
+        except:
             continue
 
-        if time_threshold and dt < time_threshold:
-            continue
-        if target_date and date != target_date:
-            continue
+        # Apply filtering rules
+        if target_date:
+            if date != target_date:
+                continue
+        elif window_start:
+            if dt < window_start:
+                continue
 
         if submode in VALID_MODES:
             mode = submode
@@ -109,14 +112,12 @@ def summarize_qsos(qsos, time_threshold=None, target_date=None, highlight_enable
             continue
 
         counts[mode][band] += 1
+        hourly_qsos[dt.strftime("%H")] += 1
 
-        if dt >= recent_cutoff:
-            hour = dt.strftime("%H")
-            hourly_qsos[hour] += 1
-
-        if highlight_enabled and (not latest_time or dt > latest_time):
-            latest_time = dt
-            most_recent = (mode, band)
+        if include_highlight:
+            if not latest_time or dt > latest_time:
+                latest_time = dt
+                most_recent = (mode, band)
 
     return counts, hourly_qsos, most_recent
 
@@ -126,45 +127,45 @@ def main():
         print(f"File not found: {filepath}")
         return
 
-    # Determine operating mode
-    one_shot = ALL or DATE != ""
-    highlight_enabled = not ALL
-    time_threshold = None
-    target_date = None
+    def determine_mode():
+        if ALL or DATE:
+            return "oneshot"
+        return "interval"
 
-    if ALL:
-        label = "ENTIRE LOG"
-    elif DATE:
-        label = f"{datetime.strptime(DATE, '%Y%m%d').date()}"
-        target_date = DATE
-    else:
-        label = "Last 24 hours"
-        time_threshold = datetime.utcnow() - timedelta(hours=24)
+    mode = determine_mode()
+    target_date = DATE if DATE else None
+    include_highlight = (mode == "interval")
 
-    def report():
+    while True:
         qsos = parse_adi(filepath)
+        window_hours = 24 if not ALL and not DATE else None
         counts, hourly_qsos, highlight = summarize_qsos(
-            qsos, time_threshold=time_threshold,
+            qsos, 
             target_date=target_date,
-            highlight_enabled=highlight_enabled
+            window_hours=window_hours,
+            include_highlight=include_highlight
         )
 
-        timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
-        print(f"\nQSO Summary at {timestamp} ({label})")
-        print(format_table(counts, highlight if highlight_enabled else None))
+        if ALL:
+            label = "ENTIRE LOG"
+        elif DATE:
+            label = f"{DATE} (static)"
+        else:
+            label = "last 24 hours"
 
-        if not ALL:
-            current_hour = datetime.utcnow().strftime("%H")
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\nQSO Summary for {label} @ {timestamp} UTC")
+        print(format_table(counts, highlight=highlight))
+
+        if mode == "interval":
+            current_hour = datetime.now(timezone.utc).strftime("%H")
             count_last_hour = hourly_qsos.get(current_hour, 0)
-            print(f"QSOs in the last {HOURLY_WINDOW} minutes: {count_last_hour}")
+            print(f"QSOs in the last {HOUR_WINDOW} minutes: {count_last_hour}")
             print("=" * 60)
 
-    if one_shot or INTERVAL <= 0:
-        report()
-    else:
-        while True:
-            report()
-            time.sleep(INTERVAL)
+        if mode == "oneshot" or INTERVAL <= 0:
+            break
+        time.sleep(INTERVAL)
 
 if __name__ == "__main__":
     main()
