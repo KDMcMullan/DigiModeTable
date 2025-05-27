@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>QSO Stats</title>
+  <style>
+    body { font-family: sans-serif; margin: 2em; }
+    form div { margin-bottom: 1em; }
+    textarea { width: 100%; height: 5em; }
+    pre { background: #f4f4f4; padding: 1em; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>QSO Summary</h1>
+  <form method="post">
+    <div>
+      <label for="stat_level">Stat Detail Level:</label>
+      <select name="stat_level" id="stat_level">
+        <option value="0" {% if stat_level == 0 %}selected{% endif %}>0 - None</option>
+        <option value="1" {% if stat_level == 1 %}selected{% endif %}>1 - 24h Count</option>
+        <option value="2" {% if stat_level == 2 %}selected{% endif %}>2 - 7d & Unique Calls</option>
+      </select>
+    </div>
+    <div>
+      <label for="interval">Interval (s):</label>
+      <input type="number" name="interval" id="interval" value="{{ interval }}">
+    </div>
+    <div>
+      <label for="date">Target Date (YYYYMMDD):</label>
+      <input type="text" name="date" id="date" value="{{ date }}">
+    </div>
+    <div>
+      <label for="time_window">Time Window (hours):</label>
+      <input type="number" name="time_window" id="time_window" value="{{ time_window }}">
+    </div>
+    <div>
+      <button type="submit">Update</button>
+    </div>
+  </form>
+
+  <h2>Latest QSO: {{ latest_qso }}</h2>
+
+  {% if stats %}
+    <h3>Summary Stats</h3>
+    <pre>{{ stats }}</pre>
+  {% endif %}
+
+  {% if table %}
+    <h3>QSO Table</h3>
+    <pre>{{ table }}</pre>
+  {% endif %}
+</body>
+</html>
