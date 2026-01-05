@@ -12,4 +12,4 @@ The script runs in Windows or Linux.
 - In Linux, it's "~/.local/share/WSJT-X/wsjtx_log.adi".
 
 # qso_web.py
-This is a webserver which does the wame thing. It's probably what will get developed in future.
+This is a webserver which does the same thing. It's probably what will get developed in future.
