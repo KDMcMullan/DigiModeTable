@@ -1,15 +1,25 @@
 # DigiModeTable
 Create tabulated QSO counts by band and mode from the WSJT-X ADI file.
 
-In the configuration section:
-- ALL is a boolean. True means process and tabulate the entire file. False means just for a specific day.
-- DATE is a string in the format "YYYYMMDD". If blank, today's date is used.
-- INTERVAL is an integer in seconds as to how often the process should run. Zero means run once and exit.
-- HOURLY_WINDOW is an integer in minutes which tells us how many QSOs there have been in that time.
+Grab the .py file and the .conf file. Put them in the same place. Modify the conf file to add the path to your .ADI file. Otherwise, just run it. You may havePython  libraries to install.
 
-The script runs in Windows or Linux.
-- In Windows, the defualt file path is "D:\Ken\HamRadio\wsjtx_log.adi".
-- In Linux, it's "~/.local/share/WSJT-X/wsjtx_log.adi".
+In the [Settings] section:
+
+- adi_file_path is the path to your ADI file. Can be a Windows or a Linux path depending on your OS.
+- recent_qso_count is the count of recent QSOs to show in that widget.
+- display_times is to display the start and end time of teh data set you're looking at.
+
+To be documented in due course:
+
+- display_since
+- unique_only
+- rate_window_minutes
+
+Farting around with them won'tbreak anything.
+
+The script runs in Windows and Linux.
+- In Windows, the file path might be "D:\Ken\HamRadio\wsjtx_log.adi".
+- In Linux, it could be "~/.local/share/WSJT-X/wsjtx_log.adi".
 
 # qso_web.py
 This was the start point. This was a webserver which essentially had the same initial functions. I'd thought it might be the direction to go, but for some reason I'm enjoying tkinter.
