@@ -15,6 +15,11 @@
 # pretty: managing the windows and the config file. Such is the nature of
 # contemporary "programming".
 #
+# 20 July 2026
+# Bit of refactoring to reduce repetition in window creation.
+# Added a new widget window to display the top most frequent repeat
+# callsigns.
+#
 # 16 July 2026
 # Ordered the bands numerically rather than alphanumerically, so that we get
 # 6,10,20,40,80 rather than 10,20,40,6,80.
@@ -79,6 +84,7 @@
 # datetimes in UTC: datetime.datetime.now(datetime.UTC).
 #
 # To do:
+# Add a version number in the header bar.
 # Given that there are over 11,000 QSO in my log with only c. 7,400 being
 # unique, it might be fun to have a list of the top ten repeat QSOs.
 # Remember and restore the previous display mode.
@@ -276,10 +282,23 @@ def get_unique_callsigns(records):
             calls.add(call)
     return len(calls)
 
+def get_repeat_callsigns(records):
+    counts = defaultdict(int)
+
+    for record in records:
+        call = record.get('call', '').strip().upper()
+        if call:
+            counts[call] += 1
+
+    repeats = {call: count for call, count in counts.items() if count > 1}
+
+    return repeats
+  
 def load_config():
     global ADI_FILE_PATH, RECENT_QSO_COUNT, DISPLAY_TIMES
     global DISPLAY_SINCE, UNIQUE_ONLY, RATE_WINDOW_MINUTES
-
+    global REPEAT_QSO_COUNT
+    
     # --- defaults ---
     ADI_FILE_PATH = ""
     RECENT_QSO_COUNT = 10
@@ -287,7 +306,8 @@ def load_config():
     DISPLAY_SINCE = True
     UNIQUE_ONLY = False
     RATE_WINDOW_MINUTES = 30
-
+    REPEAT_QSO_COUNT = 10
+    
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
 
@@ -298,7 +318,8 @@ def load_config():
         DISPLAY_SINCE = config.getboolean('Settings', 'DISPLAY_SINCE', fallback=DISPLAY_SINCE)
         UNIQUE_ONLY = config.getboolean('Settings', 'UNIQUE_ONLY', fallback=UNIQUE_ONLY)
         RATE_WINDOW_MINUTES = config.getint('Settings', 'RATE_WINDOW_MINUTES', fallback=RATE_WINDOW_MINUTES)
-
+        REPEAT_QSO_COUNT = config.getint('Settings', 'REPEAT_QSO_COUNT', fallback=REPEAT_QSO_COUNT
+    )
 
 # ----------- Tkinter GUI Part ------------
 
@@ -309,7 +330,11 @@ class QSOStatsApp(tk.Tk):
         self.load_window_position()
 
         self.mode_index = 0
+
         self.recent_window = None  # Track recent window instance
+        self.repeat_window = None  # Track repeat QSOs window instance
+
+        self.repeat_text = None
 
         self.rowconfigure(1, weight=1)   # Let row 1 (the text box) expand
         self.columnconfigure(0, weight=1)
@@ -332,6 +357,9 @@ class QSOStatsApp(tk.Tk):
         self.btn_show_recent = tk.Button(button_frame, text="Show <R>ecent QSOs", command=self.show_recent_window)
         self.btn_show_recent.pack(side=tk.LEFT, padx=5)
 
+        self.btn_show_repeat = tk.Button(button_frame, text="Show <T>op QSOs", command=self.show_repeat_window)
+        self.btn_show_repeat.pack(side=tk.LEFT, padx=5)
+
         # create "Unique QSOs" checkbox 
         self.unique_var = tk.BooleanVar(value=UNIQUE_ONLY)
 
@@ -350,13 +378,22 @@ class QSOStatsApp(tk.Tk):
         # Bind 'r' key to show recent window
         self.bind('<r>', lambda event: self.show_recent_window())
 
+        # Bind 't' key to show repeat window
+        self.bind('<t>', lambda event: self.show_repeat_window())
+
         # Reopen recent QSOs window if it was open last time
         config = configparser.ConfigParser()
+
         if os.path.exists(CONFIG_FILE):
             config.read(CONFIG_FILE)
+
             was_open = config.get('recentWindow', 'open', fallback='no')
             if was_open.lower() == 'yes':
                 self.show_recent_window()
+
+            was_open = config.get('repeatWindow', 'open', fallback='no')
+            if was_open.lower() == 'yes':
+                self.show_repeat_window()
 
         # Bind close event to save geometry
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -365,47 +402,53 @@ class QSOStatsApp(tk.Tk):
         self.update_stats()
 
 
-    def show_recent_window(self):
-        if self.recent_window is not None and self.recent_window.winfo_exists():
-            self.recent_window.lift()
-            return
+    def create_text_window(self, title, geometry):
 
-        self.recent_window = tk.Toplevel(self)
-        self.recent_window.title("Recent QSOs")
-        
-        # Load last saved geometry and set it if available
-        geom = self.load_recent_window_position()
-        if geom:
-            self.recent_window.geometry(geom)
-        else:
-            self.recent_window.geometry("300x250")
+        window = tk.Toplevel(self)
+        window.title(title)
+        window.geometry(geometry)
 
-#        self.recent_text = tk.Text(self.recent_window, font=("Courier", 12), wrap='none', state=tk.DISABLED)
-#        self.recent_text.pack(fill=tk.BOTH, expand=True)
-
-        frame = tk.Frame(self.recent_window)
+        frame = tk.Frame(window)
         frame.pack(fill=tk.BOTH, expand=True)
 
         yscroll = tk.Scrollbar(frame, orient=tk.VERTICAL)
         yscroll.pack(side=tk.RIGHT, fill=tk.Y)
 
- #       xscroll = tk.Scrollbar(frame, orient=tk.HORIZONTAL)
- #       xscroll.pack(side=tk.BOTTOM, fill=tk.X)
+        xscroll = tk.Scrollbar(frame, orient=tk.HORIZONTAL)
+        xscroll.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.recent_text = tk.Text(
+        text = tk.Text(
             frame,
             font=("Courier", 12),
             wrap='none',
             state=tk.DISABLED,
-            yscrollcommand=yscroll.set
- #           xscrollcommand=xscroll.set
+            yscrollcommand=yscroll.set,
+            xscrollcommand=xscroll.set
         )
 
-        self.recent_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        yscroll.config(command=self.recent_text.yview)
-#        xscroll.config(command=self.recent_text.xview)
+        yscroll.config(command=text.yview)
+        xscroll.config(command=text.xview)
 
+        return window, text
+
+
+    def show_recent_window(self):
+        if self.recent_window is not None and self.recent_window.winfo_exists():
+            self.recent_window.lift()
+            return
+
+        geom = self.load_window_geometry('recentWindow')
+
+        if not geom:
+            geom = "300x250"
+    
+        self.recent_window, self.recent_text = self.create_text_window(
+            "Recent QSOs",
+            geom
+        )
+        
         # Save geometry on close
         def on_close_recent():
             self.save_geometry_section('recentWindow', self.recent_window.geometry())
@@ -423,7 +466,44 @@ class QSOStatsApp(tk.Tk):
             self.recent_window.destroy()
         self.recent_window = None
 
+    def show_repeat_window(self):
 
+        if self.repeat_window is not None and self.repeat_window.winfo_exists():
+            self.repeat_window.lift()
+            return
+
+        geom = self.load_window_geometry('repeatWindow')
+
+        if not geom:
+            geom = "300x250"
+    
+        self.repeat_window, self.repeat_text = self.create_text_window(
+            "Repeat QSOs",
+            geom
+        )
+
+        self.update_repeat_qsos()
+        
+
+        def on_close_repeat():
+            self.save_geometry_section(
+                'repeatWindow',
+                self.repeat_window.geometry()
+            )
+            self.close_repeat_window()
+
+        self.repeat_window.protocol("WM_DELETE_WINDOW", on_close_repeat)
+
+        self.update_repeat_qsos()
+
+        self.focus_force()
+
+    def close_repeat_window(self):
+        if self.repeat_window is not None:
+            self.repeat_window.destroy()
+        self.repeat_window = None
+
+    
     def update_recent_qsos(self):
         global all_records
         if self.recent_window is None or not self.recent_window.winfo_exists():
@@ -476,6 +556,44 @@ class QSOStatsApp(tk.Tk):
         # Schedule next update in 15 seconds
         self.recent_window.after(15000, self.update_recent_qsos)
 
+    def update_repeat_qsos(self):
+        global all_records
+
+        if self.repeat_window is None or not self.repeat_window.winfo_exists():
+            return
+
+        # get the repeat callsigns
+        repeats = get_repeat_callsigns(all_records)
+
+        # sort them by number of QSOs, highest first 
+        sorted_repeats = sorted(
+            repeats.items(),
+            key=lambda x: (-x[1], x[0])
+        )
+
+        # keep the top 'n'
+        sorted_repeats = sorted_repeats[:REPEAT_QSO_COUNT]
+
+        # build the display
+        lines = []
+
+        for call, count in sorted_repeats:
+            lines.append(f"{call:<12} {count:>4}")
+
+        # display it
+        self.repeat_text.config(state=tk.NORMAL)
+        self.repeat_text.delete("1.0", tk.END)
+
+        if lines:
+            self.repeat_text.insert(tk.END, "\n".join(lines))
+        else:
+            self.repeat_text.insert(tk.END, "No repeat QSOs.")
+
+        self.repeat_text.config(state=tk.DISABLED)
+
+        # schedule it
+        self.repeat_window.after(15000, self.update_repeat_qsos)
+    
     def change_mode(self):
         self.mode_index = (self.mode_index + 1) % 3
         self.update_stats(False) # but don't schedule another update
@@ -573,12 +691,11 @@ class QSOStatsApp(tk.Tk):
         with open(CONFIG_FILE, 'w') as f:
             config.write(f)
 
-    def load_recent_window_position(self):
+    def load_window_geometry(self, section):
         if os.path.exists(CONFIG_FILE):
             config = configparser.ConfigParser()
             config.read(CONFIG_FILE)
-            geometry = config.get('recentWindow', 'geometry', fallback=None)
-            return geometry
+            return config.get(section, 'geometry', fallback=None)
         return None
 
     def load_window_position(self):
@@ -604,6 +721,7 @@ class QSOStatsApp(tk.Tk):
 #        config.set('Settings', 'DISPLAY_TIMES', str(DISPLAY_TIMES))
 #        config.set('Settings', 'DISPLAY_SINCE', str(DISPLAY_SINCE))
         config.set('Settings', 'UNIQUE_ONLY', str(self.unique_var.get()))
+#        config.set('Settings', 'REPEAT_QSO_COUNT', str(REPEAT_QSO_COUNT))
 #        config.set('Settings', 'RATE_WINDOW_MINUTES', str(RATE_WINDOW_MINUTES))
 
         # Save recent window state
@@ -614,6 +732,15 @@ class QSOStatsApp(tk.Tk):
             }
         else:
             config['recentWindow'] = {'open': 'no'}
+
+        if self.repeat_window and self.repeat_window.winfo_exists():
+            config['repeatWindow'] = {
+                'geometry': self.repeat_window.geometry(),
+                'open': 'yes'
+            }
+        else:
+            config['repeatWindow'] = {'open': 'no'}
+
 
         with open(CONFIG_FILE, 'w') as f:
             config.write(f)
