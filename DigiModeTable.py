@@ -9,10 +9,24 @@
 #
 # Interesting observation at 3rd October 2025: there are 437 lines of code.
 # Only 75 are for displaying the data we want to display. 30 lines of code
-# for readnig the data. Thre are 50 lines which are my comments and change
-# history. If we discount the change history, 27% of the code is the important
-# stuff, and the remaining 73% is for makng it look pretty: managing the
-# windows and the config file.
+# are for reading the data. There are 50 lines which are my comments and
+# change history. If we discount the change history, 27% of the code is the
+# important stuff, and the remaining 73% is just bloat for making it look
+# pretty: managing the windows and the config file. Such is the nature of
+# contemporary "programming".
+#
+# 16 July 2026
+# Ordered the bands numerically rather than alphanumerically, so that we get
+# 6,10,20,40,80 rather than 10,20,40,6,80.
+# Added a vertical scrollbar to the Recent QSOs window. Added the framework
+# for a horizontal scroll bar, but not yet implemented.
+# 
+# 27 Apr 2026
+# Added QSOs per hour display.
+# Tidied up the config file loader: previously, if the config file didn't
+# exist, the defaults would never be deployed. Also tidied up the config
+# save: previously, the Settings" section was over-written instead of being
+# updated.
 #
 # 09 Mar 2026
 # Added a checkbox to cause the display of UNIQUE respondents only.
@@ -60,8 +74,6 @@
 # Bound the "r" key to the recent QSO list button.
 #
 # Bug list:
-#
-# Fix:
 # DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled
 # for removal in a future version. Use timezone-aware objects to represent
 # datetimes in UTC: datetime.datetime.now(datetime.UTC).
@@ -70,14 +82,13 @@
 # Given that there are over 11,000 QSO in my log with only c. 7,400 being
 # unique, it might be fun to have a list of the top ten repeat QSOs.
 # Remember and restore the previous display mode.
-# Button (perhaps on Recent QSOs window) to restore (dock?) the Reecnt
+# Button (perhaps on Recent QSOs window) to restore (dock?) the Recent
 # Window beside the main one, with a predefined height and width.
-# Add scroll bars to the recent QSOs list.
-# Display count of QSOs this period (this hour, nominally).
 # Display time since last QSO.
-# Display rate per hour of QSOs. 6 exchanges are required per QSO. An FT8
-# exchange takes 15 seconds. 6*15= 90 seconds minimum per QSO, so 40 QSOs
-# per hour is technically feasable. 80 for FT4.
+# Display a text graph of QSOs per hour with 24 hours across the bottom.
+# (6 exchanges are required per QSO. An FT8 exchange takes 15 seconds.
+# 6*15= 90 seconds minimum per QSO, so 40 QSOs per hour is technically
+# feasable. 80 for FT4.
 
 import os
 import threading
@@ -196,6 +207,32 @@ def filter_by_dates(records, start_dt, end_dt):
     return result
 
 
+def calculate_qso_rate(records, window_minutes):
+    now = datetime.utcnow()
+    start = now - timedelta(minutes=window_minutes)
+
+    count = 0
+
+    for record in records:
+        try:
+            date_str = record.get('qso_date', '')
+            time_str = record.get('time_on', '000000').zfill(6)
+            dt = datetime.strptime(date_str + time_str, '%Y%m%d%H%M%S')
+
+            if start <= dt <= now:
+                count += 1
+        except:
+            continue
+
+    if window_minutes == 0:
+        return 0
+
+    # Scale to QSOs per hour
+    rate_per_hour = count * (60 / window_minutes)
+
+    return count, rate_per_hour
+
+    
 def count_modes_bands(qsos, unique_only=False):
     if unique_only:
         counts = defaultdict(set)
@@ -240,16 +277,28 @@ def get_unique_callsigns(records):
     return len(calls)
 
 def load_config():
-    global ADI_FILE_PATH, RECENT_QSO_COUNT, DISPLAY_TIMES, DISPLAY_SINCE, UNIQUE_ONLY
-    if os.path.exists(CONFIG_FILE):
-        config = configparser.ConfigParser()
-        config.read(CONFIG_FILE)
-        ADI_FILE_PATH = config.get('Settings', 'ADI_FILE_PATH')
-        RECENT_QSO_COUNT = config.getint('Settings', 'RECENT_QSO_COUNT', fallback=10)
-        DISPLAY_TIMES = config.getboolean('Settings', 'DISPLAY_TIMES', fallback=False)
-        DISPLAY_SINCE = config.getboolean('Settings', 'DISPLAY_SINCE', fallback=True)
-        UNIQUE_ONLY = config.getboolean('Settings', 'UNIQUE_ONLY', fallback=False)
-        
+    global ADI_FILE_PATH, RECENT_QSO_COUNT, DISPLAY_TIMES
+    global DISPLAY_SINCE, UNIQUE_ONLY, RATE_WINDOW_MINUTES
+
+    # --- defaults ---
+    ADI_FILE_PATH = ""
+    RECENT_QSO_COUNT = 10
+    DISPLAY_TIMES = False
+    DISPLAY_SINCE = True
+    UNIQUE_ONLY = False
+    RATE_WINDOW_MINUTES = 30
+
+    config = configparser.ConfigParser()
+    config.read(CONFIG_FILE)
+
+    if config.has_section('Settings'):
+        ADI_FILE_PATH = config.get('Settings', 'ADI_FILE_PATH', fallback=ADI_FILE_PATH)
+        RECENT_QSO_COUNT = config.getint('Settings', 'RECENT_QSO_COUNT', fallback=RECENT_QSO_COUNT)
+        DISPLAY_TIMES = config.getboolean('Settings', 'DISPLAY_TIMES', fallback=DISPLAY_TIMES)
+        DISPLAY_SINCE = config.getboolean('Settings', 'DISPLAY_SINCE', fallback=DISPLAY_SINCE)
+        UNIQUE_ONLY = config.getboolean('Settings', 'UNIQUE_ONLY', fallback=UNIQUE_ONLY)
+        RATE_WINDOW_MINUTES = config.getint('Settings', 'RATE_WINDOW_MINUTES', fallback=RATE_WINDOW_MINUTES)
+
 
 # ----------- Tkinter GUI Part ------------
 
@@ -331,8 +380,31 @@ class QSOStatsApp(tk.Tk):
         else:
             self.recent_window.geometry("300x250")
 
-        self.recent_text = tk.Text(self.recent_window, font=("Courier", 12), wrap='none', state=tk.DISABLED)
-        self.recent_text.pack(fill=tk.BOTH, expand=True)
+#        self.recent_text = tk.Text(self.recent_window, font=("Courier", 12), wrap='none', state=tk.DISABLED)
+#        self.recent_text.pack(fill=tk.BOTH, expand=True)
+
+        frame = tk.Frame(self.recent_window)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        yscroll = tk.Scrollbar(frame, orient=tk.VERTICAL)
+        yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+ #       xscroll = tk.Scrollbar(frame, orient=tk.HORIZONTAL)
+ #       xscroll.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.recent_text = tk.Text(
+            frame,
+            font=("Courier", 12),
+            wrap='none',
+            state=tk.DISABLED,
+            yscrollcommand=yscroll.set
+ #           xscrollcommand=xscroll.set
+        )
+
+        self.recent_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        yscroll.config(command=self.recent_text.yview)
+#        xscroll.config(command=self.recent_text.xview)
 
         # Save geometry on close
         def on_close_recent():
@@ -350,7 +422,6 @@ class QSOStatsApp(tk.Tk):
         if self.recent_window is not None:
             self.recent_window.destroy()
         self.recent_window = None
-
 
 
     def update_recent_qsos(self):
@@ -409,6 +480,13 @@ class QSOStatsApp(tk.Tk):
         self.mode_index = (self.mode_index + 1) % 3
         self.update_stats(False) # but don't schedule another update
 
+    def band_sort_key(self, band):
+        try: # unless we're expectign unexpected bands, we probably don't need the try ... except
+          
+            return float(band.rstrip("m"))
+        except ValueError:
+            return float("inf")   # Unknown bands go at the end
+
     def update_stats(self, reschedule = True):
 
         global all_records
@@ -431,6 +509,8 @@ class QSOStatsApp(tk.Tk):
         total_calls = get_unique_callsigns(filtered)
         per_mode_band_unique = sum(counts_unique.values())
 
+        rate_count, rate_per_hour = calculate_qso_rate(all_records, RATE_WINDOW_MINUTES)
+
         now = datetime.utcnow()
 
         # Clear and print in text widget
@@ -449,7 +529,12 @@ class QSOStatsApp(tk.Tk):
             self.text_output.insert(tk.END, "\nNo data to display.\n")
         else:
             modes = sorted(set(mode for (mode, band) in counts.keys()))
-            bands = sorted(set(band for (mode, band) in counts.keys()))
+#            bands = sorted(set(band for (mode, band) in counts.keys()))
+
+            bands = sorted(
+                set(band for (mode, band) in counts.keys()),
+                key=self.band_sort_key
+            )
 
             mode_col_width = max(len("Mode"), max(len(m) for m in modes)) if modes else len("Mode")
             band_col_width = max(max(len(b) for b in bands), 5) if bands else 5
@@ -473,9 +558,12 @@ class QSOStatsApp(tk.Tk):
 
             self.text_output.insert(tk.END, "\n")
 #            self.text_output.insert(tk.END, f"Total QSOs: {total_qsos}\n")
-#            self.text_output.insert(tk.END, f"Per Mode/Band Unique QSOs: {per_mode_band_unique}\n")
             self.text_output.insert(tk.END, f"Total QSOs: {total_qsos}, Unique per Mode/Band: {per_mode_band_unique}\n")
+#            self.text_output.insert(tk.END, f"Per Mode/Band Unique QSOs: {per_mode_band_unique}\n")
             self.text_output.insert(tk.END, f"Global Unique QSOs: {total_calls}\n")
+            self.text_output.insert(tk.END, "\n")
+            self.text_output.insert(tk.END, f"Rate: {rate_per_hour:.1f} QSOs/hr ({rate_count} in last {RATE_WINDOW_MINUTES} min)\n"
+)
 
     def save_geometry_section(self, section, geometry):
         config = configparser.ConfigParser()
@@ -508,14 +596,15 @@ class QSOStatsApp(tk.Tk):
         if os.path.exists(CONFIG_FILE):
             config.read(CONFIG_FILE)
 
-        # Save main program settings
-        config['Settings'] = {
-            'ADI_FILE_PATH': ADI_FILE_PATH,
-            'RECENT_QSO_COUNT': RECENT_QSO_COUNT,
-            'DISPLAY_TIMES': DISPLAY_TIMES,
-            'DISPLAY_SINCE': DISPLAY_SINCE,
-            'UNIQUE_ONLY': self.unique_var.get()
-        }
+        # Save main program settings. Most are commented out as we never modify them at run time.
+        # These should be re-added if we modify them during run
+
+#        config.set('Settings', 'ADI_FILE_PATH', str(ADI_FILE_PATH))
+#        config.set('Settings', 'RECENT_QSO_COUNT', str(RECENT_QSO_COUNT))
+#        config.set('Settings', 'DISPLAY_TIMES', str(DISPLAY_TIMES))
+#        config.set('Settings', 'DISPLAY_SINCE', str(DISPLAY_SINCE))
+        config.set('Settings', 'UNIQUE_ONLY', str(self.unique_var.get()))
+#        config.set('Settings', 'RATE_WINDOW_MINUTES', str(RATE_WINDOW_MINUTES))
 
         # Save recent window state
         if self.recent_window and self.recent_window.winfo_exists():
