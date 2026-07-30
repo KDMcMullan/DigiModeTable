@@ -14,6 +14,13 @@
 # stuff, and the remaining 73% is for makng it look pretty: managing the
 # windows and the config file.
 #
+# 09 Mar 2026
+# Added a checkbox to cause the display of UNIQUE respondents only.
+# The unique respondents in the table are unique to that band / mode.
+# It would be impossible to show a table of globally unique QSOs, since
+# we would have to pick a band / mode to assosciate them with.
+# We now display the total QSOs, the total of unique QSOs for all bands /
+# modes and teh total of globally unique QSOs.
 #
 # 07 Oct 2025
 # Fixed a little buglet where the total number of seconds on the most recent
@@ -84,6 +91,7 @@ import inspect
 
 CONFIG_FILE = "digimodetable.conf"
 ADI_FILE_PATH = ""
+UNIQUE_ONLY = False
 
 mode_list = [{"label":"All QSOs","start":"epoch","stop":"now"},
              {"label":"Last 7 days","start":"-168","stop":"now"},
@@ -187,11 +195,17 @@ def filter_by_dates(records, start_dt, end_dt):
             continue
     return result
 
-def count_modes_bands(qsos):
-    counts = defaultdict(int)
+
+def count_modes_bands(qsos, unique_only=False):
+    if unique_only:
+        counts = defaultdict(set)
+    else:
+        counts = defaultdict(int)
+
     for qso in qsos:
         mode = qso.get('mode', '').upper()
         band = qso.get('band', '').lower()
+        call = qso.get('call', '').upper()
 
         if 'MFSK' in mode:
             submode = qso.get('submode', '').upper()
@@ -203,8 +217,19 @@ def count_modes_bands(qsos):
         if mode == '' or band == '':
             continue
 
-        counts[(mode, band)] += 1
+        key = (mode, band)
+
+        if unique_only:
+            if call:
+                counts[key].add(call)
+        else:
+            counts[key] += 1
+
+    if unique_only:
+        return {k: len(v) for k, v in counts.items()}
+
     return dict(counts)
+
 
 def get_unique_callsigns(records):
     calls = set()
@@ -215,7 +240,7 @@ def get_unique_callsigns(records):
     return len(calls)
 
 def load_config():
-    global ADI_FILE_PATH, RECENT_QSO_COUNT, DISPLAY_TIMES, DISPLAY_SINCE
+    global ADI_FILE_PATH, RECENT_QSO_COUNT, DISPLAY_TIMES, DISPLAY_SINCE, UNIQUE_ONLY
     if os.path.exists(CONFIG_FILE):
         config = configparser.ConfigParser()
         config.read(CONFIG_FILE)
@@ -223,6 +248,8 @@ def load_config():
         RECENT_QSO_COUNT = config.getint('Settings', 'RECENT_QSO_COUNT', fallback=10)
         DISPLAY_TIMES = config.getboolean('Settings', 'DISPLAY_TIMES', fallback=False)
         DISPLAY_SINCE = config.getboolean('Settings', 'DISPLAY_SINCE', fallback=True)
+        UNIQUE_ONLY = config.getboolean('Settings', 'UNIQUE_ONLY', fallback=False)
+        
 
 # ----------- Tkinter GUI Part ------------
 
@@ -255,6 +282,18 @@ class QSOStatsApp(tk.Tk):
 
         self.btn_show_recent = tk.Button(button_frame, text="Show <R>ecent QSOs", command=self.show_recent_window)
         self.btn_show_recent.pack(side=tk.LEFT, padx=5)
+
+        # create "Unique QSOs" checkbox 
+        self.unique_var = tk.BooleanVar(value=UNIQUE_ONLY)
+
+        self.chk_unique = tk.Checkbutton(
+            button_frame,
+            text="Unique QSOs Only",
+            variable=self.unique_var,
+            command=self.update_stats
+        )
+
+        self.chk_unique.pack(side=tk.LEFT, padx=5)
 
         # Bind 'm' key to mode change
         self.bind('<m>', lambda event: self.change_mode())
@@ -380,15 +419,31 @@ class QSOStatsApp(tk.Tk):
         label, start_dt, end_dt = get_time_window(self.mode_index)
         all_records = read_adi_to_dict(ADI_FILE_PATH)
         filtered = filter_by_dates(all_records, start_dt, end_dt)
-        counts = count_modes_bands(filtered)
+
+        counts_all = count_modes_bands(filtered, False)
+        counts_unique = count_modes_bands(filtered, True)
+
+        # Table display follows checkbox
+        counts = counts_unique if self.unique_var.get() else counts_all
+        # counts = count_modes_bands(filtered, self.unique_var.get())
+
         total_qsos = len(filtered)
         total_calls = get_unique_callsigns(filtered)
+        per_mode_band_unique = sum(counts_unique.values())
+
         now = datetime.utcnow()
 
         # Clear and print in text widget
         self.text_output.delete("1.0", tk.END)
 
-        self.text_output.insert(tk.END, f"\"{label}\"\n")
+#        strUTC = "%H:%M:%S UTC"
+        strUTC = "%H:%M UTC"
+        self.text_output.insert(tk.END, f"\"{label}\" ")
+        if self.unique_var.get():
+            self.text_output.insert(tk.END, "(Unique) ")
+        else:
+            self.text_output.insert(tk.END, "(Global) ")
+        self.text_output.insert(tk.END, f"Time Now: {now.strftime(strUTC)}\n")
 
         if not counts:
             self.text_output.insert(tk.END, "\nNo data to display.\n")
@@ -398,8 +453,6 @@ class QSOStatsApp(tk.Tk):
 
             mode_col_width = max(len("Mode"), max(len(m) for m in modes)) if modes else len("Mode")
             band_col_width = max(max(len(b) for b in bands), 5) if bands else 5
-
-            strUTC = "%H:%M:%S UTC"
 
             if DISPLAY_TIMES:
               self.text_output.insert(tk.END, f"(From: {start_dt.strftime(strUTC)} To: {end_dt.strftime(strUTC)})\n")
@@ -419,8 +472,10 @@ class QSOStatsApp(tk.Tk):
                 self.text_output.insert(tk.END, row + "\n")
 
             self.text_output.insert(tk.END, "\n")
-            self.text_output.insert(tk.END, f"Total QSOs: {total_qsos} ({total_calls} unique)\n")
-            self.text_output.insert(tk.END, f"\nTime Now: {now.strftime(strUTC)}\n")
+#            self.text_output.insert(tk.END, f"Total QSOs: {total_qsos}\n")
+#            self.text_output.insert(tk.END, f"Per Mode/Band Unique QSOs: {per_mode_band_unique}\n")
+            self.text_output.insert(tk.END, f"Total QSOs: {total_qsos}, Unique per Mode/Band: {per_mode_band_unique}\n")
+            self.text_output.insert(tk.END, f"Global Unique QSOs: {total_calls}\n")
 
     def save_geometry_section(self, section, geometry):
         config = configparser.ConfigParser()
@@ -448,10 +503,21 @@ class QSOStatsApp(tk.Tk):
 
     def on_close(self):
         self.save_geometry_section('Window', self.geometry())
+
         config = configparser.ConfigParser()
         if os.path.exists(CONFIG_FILE):
             config.read(CONFIG_FILE)
 
+        # Save main program settings
+        config['Settings'] = {
+            'ADI_FILE_PATH': ADI_FILE_PATH,
+            'RECENT_QSO_COUNT': RECENT_QSO_COUNT,
+            'DISPLAY_TIMES': DISPLAY_TIMES,
+            'DISPLAY_SINCE': DISPLAY_SINCE,
+            'UNIQUE_ONLY': self.unique_var.get()
+        }
+
+        # Save recent window state
         if self.recent_window and self.recent_window.winfo_exists():
             config['recentWindow'] = {
                 'geometry': self.recent_window.geometry(),
@@ -464,7 +530,6 @@ class QSOStatsApp(tk.Tk):
             config.write(f)
 
         self.destroy()
-
 
 def main():
     load_config()
