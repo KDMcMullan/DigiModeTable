@@ -15,8 +15,13 @@
 # pretty: managing the windows and the config file. Such is the nature of
 # contemporary "programming".
 #
+# 7 Aug 2026
+# Added a rudimentary MATT publication each time teh windows are refreshed.
+# It presently contains teh last complete QSO details, the total count of
+# QSOs and the rate per hour.
+#
 # 20 July 2026
-# Bit of refactoring to reduce repetition in window creation.
+# Bit of refactoring to reduce repetition in windo creation.
 # Added a new widget window to display the top most frequent repeat
 # callsigns.
 #
@@ -85,8 +90,6 @@
 #
 # To do:
 # Add a version number in the header bar.
-# Given that there are over 11,000 QSO in my log with only c. 7,400 being
-# unique, it might be fun to have a list of the top ten repeat QSOs.
 # Remember and restore the previous display mode.
 # Button (perhaps on Recent QSOs window) to restore (dock?) the Recent
 # Window beside the main one, with a predefined height and width.
@@ -106,9 +109,25 @@ import configparser
 import re
 import inspect
 
+import json
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    mqtt = None
+
 CONFIG_FILE = "digimodetable.conf"
 ADI_FILE_PATH = ""
 UNIQUE_ONLY = False
+
+MQTT_BROKER = ""
+MQTT_PORT = 1883
+MQTT_USERNAME = ""
+MQTT_PASSWORD = ""
+MQTT_TOPIC = "digimodetable/qso_stats"
+
+mqtt_client = None
+
 
 mode_list = [{"label":"All QSOs","start":"epoch","stop":"now"},
              {"label":"Last 7 days","start":"-168","stop":"now"},
@@ -273,6 +292,15 @@ def count_modes_bands(qsos, unique_only=False):
 
     return dict(counts)
 
+def get_display_mode(qso):
+    mode = qso.get('mode', '').upper()
+
+    if 'MFSK' in mode:
+        submode = qso.get('submode', '').upper()
+        if submode:
+            return submode
+
+    return mode
 
 def get_unique_callsigns(records):
     calls = set()
@@ -293,12 +321,85 @@ def get_repeat_callsigns(records):
     repeats = {call: count for call, count in counts.items() if count > 1}
 
     return repeats
-  
+
+def mqtt_publish_stats(rate_per_hour, rate_count):
+    global mqtt_client
+
+    if not MQTT_BROKER:
+        return
+
+    if mqtt is None:
+        return
+
+#    payload = {
+#        "timestamp": datetime.utcnow().isoformat() + "Z",
+#        "qso_rate_per_hour": round(rate_per_hour, 1),
+#        "qso_count_window": rate_count,
+#        "window_minutes": RATE_WINDOW_MINUTES
+#    }
+
+    latest_qso = max(
+        all_records,
+        key=lambda r: r.get('qso_date','') + r.get('time_on','000000')
+    )
+
+#    last_mode = get_display_mode(latest_qso)
+
+    payload = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+
+        "qso": {
+            "rate_per_hour": round(rate_per_hour, 1),
+            "total_qsos": len(all_records)
+        },
+
+        "last": latest_qso
+
+    }
+
+    try:
+        if mqtt_client is None:
+            mqtt_client = mqtt.Client(client_id="DigiModeTable")
+            if MQTT_USERNAME:
+                mqtt_client.username_pw_set(
+                    MQTT_USERNAME,
+                    MQTT_PASSWORD
+                )
+
+            mqtt_client.connect(
+                MQTT_BROKER,
+                MQTT_PORT,
+                2 # timeout
+            )
+
+            mqtt_client.loop_start()
+
+        result = mqtt_client.publish(
+            MQTT_TOPIC,
+            json.dumps(payload),
+            qos=0
+        )
+
+        print(result.rc) # debug
+        print(result.is_published()) # debug
+
+    except Exception as e:
+        print(f"MQTT error: {e!r}") # debug
+
+        try:
+            mqtt_client.disconnect()
+        except Exception:
+            pass
+
+        mqtt_client = None
+
+ 
 def load_config():
     global ADI_FILE_PATH, RECENT_QSO_COUNT, DISPLAY_TIMES
     global DISPLAY_SINCE, UNIQUE_ONLY, RATE_WINDOW_MINUTES
     global REPEAT_QSO_COUNT
-    
+    global MQTT_BROKER, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD
+
     # --- defaults ---
     ADI_FILE_PATH = ""
     RECENT_QSO_COUNT = 10
@@ -307,7 +408,7 @@ def load_config():
     UNIQUE_ONLY = False
     RATE_WINDOW_MINUTES = 30
     REPEAT_QSO_COUNT = 10
-    
+
     config = configparser.ConfigParser()
     config.read(CONFIG_FILE)
 
@@ -318,8 +419,12 @@ def load_config():
         DISPLAY_SINCE = config.getboolean('Settings', 'DISPLAY_SINCE', fallback=DISPLAY_SINCE)
         UNIQUE_ONLY = config.getboolean('Settings', 'UNIQUE_ONLY', fallback=UNIQUE_ONLY)
         RATE_WINDOW_MINUTES = config.getint('Settings', 'RATE_WINDOW_MINUTES', fallback=RATE_WINDOW_MINUTES)
-        REPEAT_QSO_COUNT = config.getint('Settings', 'REPEAT_QSO_COUNT', fallback=REPEAT_QSO_COUNT
-    )
+        REPEAT_QSO_COUNT = config.getint('Settings', 'REPEAT_QSO_COUNT', fallback=REPEAT_QSO_COUNT)
+        MQTT_BROKER = config.get('Settings', 'MQTT_BROKER', fallback="")
+        MQTT_PORT = config.getint('Settings', 'MQTT_PORT', fallback=1883)
+        MQTT_USERNAME = config.get('Settings', 'MQTT_USERNAME', fallback="")
+        MQTT_PASSWORD = config.get('Settings', 'MQTT_PASSWORD', fallback="")
+
 
 # ----------- Tkinter GUI Part ------------
 
@@ -496,7 +601,12 @@ class QSOStatsApp(tk.Tk):
 
         self.update_repeat_qsos()
 
+#        self.align_aux_windows() # call once
+
         self.focus_force()
+
+
+
 
     def close_repeat_window(self):
         if self.repeat_window is not None:
@@ -609,6 +719,8 @@ class QSOStatsApp(tk.Tk):
 
         global all_records
 
+        timer = datetime.utcnow() # debug
+
         # Schedule next update in 15 seconds
         if reschedule: self.after(15000, self.update_stats)
 
@@ -628,6 +740,8 @@ class QSOStatsApp(tk.Tk):
         per_mode_band_unique = sum(counts_unique.values())
 
         rate_count, rate_per_hour = calculate_qso_rate(all_records, RATE_WINDOW_MINUTES)
+
+        mqtt_publish_stats(rate_per_hour, rate_count)
 
         now = datetime.utcnow()
 
@@ -680,8 +794,10 @@ class QSOStatsApp(tk.Tk):
 #            self.text_output.insert(tk.END, f"Per Mode/Band Unique QSOs: {per_mode_band_unique}\n")
             self.text_output.insert(tk.END, f"Global Unique QSOs: {total_calls}\n")
             self.text_output.insert(tk.END, "\n")
-            self.text_output.insert(tk.END, f"Rate: {rate_per_hour:.1f} QSOs/hr ({rate_count} in last {RATE_WINDOW_MINUTES} min)\n"
-)
+            self.text_output.insert(tk.END, f"Rate: {rate_per_hour:.1f} QSOs/hr ({rate_count} in last {RATE_WINDOW_MINUTES} min)\n")
+        timer=datetime.utcnow()-timer # debug
+#        self.text_output.insert(tk.END, f"Timer: {timer}ms)\n") # debug
+
 
     def save_geometry_section(self, section, geometry):
         config = configparser.ConfigParser()
@@ -715,6 +831,8 @@ class QSOStatsApp(tk.Tk):
 
         # Save main program settings. Most are commented out as we never modify them at run time.
         # These should be re-added if we modify them during run
+        # If one of these settings is not in teh config dile, enable the line here and run / stop
+        # the program. that will write it.
 
 #        config.set('Settings', 'ADI_FILE_PATH', str(ADI_FILE_PATH))
 #        config.set('Settings', 'RECENT_QSO_COUNT', str(RECENT_QSO_COUNT))
@@ -746,6 +864,54 @@ class QSOStatsApp(tk.Tk):
             config.write(f)
 
         self.destroy()
+
+
+    def align_aux_windows(self):
+        self.update_idletasks()
+
+        main_x = self.winfo_x()
+        main_y = self.winfo_y()
+        main_w = self.winfo_width()
+        main_h = self.winfo_height()
+
+        main_right = main_x + main_w
+        main_bottom = main_y + main_h
+
+        if self.recent_window and self.recent_window.winfo_exists():
+
+            self.recent_window.update_idletasks()
+
+            recent_w = self.recent_window.winfo_width()
+            recent_h = self.recent_window.winfo_height()
+
+            recent_x = main_right
+            recent_y = main_y
+
+            self.recent_window.geometry(
+                f"{recent_w}x{recent_h}+{recent_x}+{recent_y}"
+            )
+
+        if self.repeat_window and self.repeat_window.winfo_exists():
+
+            self.repeat_window.update_idletasks()
+
+            repeat_w = self.repeat_window.winfo_width()
+
+            repeat_x = main_right - repeat_w
+            repeat_y = main_bottom
+
+            recent_bottom = (
+                self.recent_window.winfo_y()
+                + self.recent_window.winfo_height()
+            )
+
+            repeat_h = recent_bottom - repeat_y
+
+            if repeat_h > 50:
+                self.repeat_window.geometry(
+                    f"{repeat_w}x{repeat_h}+{repeat_x}+{repeat_y}"
+                )
+
 
 def main():
     load_config()
