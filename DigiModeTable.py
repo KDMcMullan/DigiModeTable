@@ -16,7 +16,7 @@
 # contemporary "programming".
 #
 # 7 Aug 2026
-# Added a rudimentary MATT publication each time teh windows are refreshed.
+# Added a rudimentary MQTT publication each time teh windows are refreshed.
 # It presently contains teh last complete QSO details, the total count of
 # QSOs and the rate per hour.
 #
@@ -114,6 +114,7 @@ import json
 try:
     import paho.mqtt.client as mqtt
 except ImportError:
+    print("paho-mqtt not installed")
     mqtt = None
 
 CONFIG_FILE = "digimodetable.conf"
